@@ -1,0 +1,28 @@
+# Archivos de Excel con datos sensibles
+*.xlsx
+InfoAgencias1099Email.xlsx
+
+# PDFs con información confidencial
+uploads/*.pdf
+
+# Base de datos SQLite
+*.db
+clients.db
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entorno virtual
+venv/
+env/
+ENV/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Logs y archivos temporales
+*.log
+*.tmp

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Envío de Correos</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-4">
+        <h1 class="mb-4">Sistema de Envío de Correos 1099</h1>
+
+        <!-- Importar Excel -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Importar Excel</h5>
+            </div>
+            <div class="card-body">
+                <form id="uploadForm" class="mb-3">
+                    <div class="input-group">
+                        <input type="file" class="form-control" id="excelFile" accept=".xlsx" required>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-upload"></i> Importar
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- PDFs Disponibles -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">PDFs Disponibles</h5>
+                        <button class="btn btn-danger btn-sm" onclick="deleteAllPDFs()">
+                            <i class="fas fa-trash"></i> Eliminar Todo
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            {% for pdf in pdfs %}
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                {{ pdf }}
+                                <div>
+                                    <button class="btn btn-danger btn-sm" onclick="deletePDF('{{ pdf }}')">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Correos Pendientes -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">Correos Pendientes</h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Estado del proceso -->
+                        <div id="sendingStatus" class="alert alert-info mb-3" style="display: none;">
+                            <h6>Enviando correos...</h6>
+                            <div class="progress mb-2">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                            </div>
+                            <small>Procesando: <span id="currentAgency"></span></small>
+                            <br>
+                            <small>Progreso: <span id="progressText">0/0</span></small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="delayTime" class="form-label">Tiempo de espera entre envíos (segundos):</label>
+                            <input type="number" class="form-control" id="delayTime" value="15" min="1" max="300">
+                        </div>
+                        <div class="form-check mb-3">
+                            <input type="checkbox" class="form-check-input" id="saveDraft">
+                            <label class="form-check-label" for="saveDraft">Guardar como borrador (en lugar de enviar)</label>
+                        </div>
+                        <button class="btn btn-primary" onclick="sendAllEmails()">
+                            <i class="fas fa-paper-plane"></i> Enviar Todos
+                        </button>
+
+                        <ul class="list-group">
+                            {% for email in pending_emails %}
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                {{ email['Agency Code'] }} - {{ email['Report email'] }}
+                                <button class="btn btn-primary btn-sm" onclick="sendEmail({{ email.id }})">
+                                    <i class="fas fa-paper-plane"></i>
+                                </button>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Correos Enviados -->
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Correos Enviados</h5>
+                        <button class="btn btn-warning btn-sm" onclick="clearDatabase()">
+                            <i class="fas fa-broom"></i> Limpiar Todo
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            {% for email in sent_emails %}
+                            <li class="list-group-item">
+                                {{ email['Agency Code'] }} - {{ email['Report email'] }}
+                                <small class="text-muted d-block">
+                                    <i class="fas fa-clock"></i> {{ email.sent_date if email.sent_date else '' }}
+                                </small>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sección de Logs -->
+    <div class="container mt-4 mb-4">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Registro de Actividades</h5>
+                <button class="btn btn-warning btn-sm" onclick="clearLogs()">
+                    <i class="fas fa-broom"></i> Limpiar Logs
+                </button>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Fecha/Hora</th>
+                                <th>Agencia</th>
+                                <th>Acción</th>
+                                <th>Estado</th>
+                                <th>Mensaje</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for log in logs %}
+                            <tr>
+                                <td>{{ log.timestamp }}</td>
+                                <td>{{ log.agency_code }}</td>
+                                <td>{{ log.action }}</td>
+                                <td>
+                                    <span class="badge {% if log.status == 'success' %}bg-success{% else %}bg-danger{% endif %}">
+                                        {{ log.status }}
+                                    </span>
+                                </td>
+                                <td>{{ log.message }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Función para importar Excel
+        document.getElementById('uploadForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', document.getElementById('excelFile').files[0]);
+
+            fetch('/import-excel', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+        });
+
+        // Función para actualizar el estado del proceso
+        function updateSendingStatus() {
+            fetch('/get-status')
+            .then(response => response.json())
+            .then(status => {
+                const statusDiv = document.getElementById('sendingStatus');
+                const progressBar = statusDiv.querySelector('.progress-bar');
+                const progressText = document.getElementById('progressText');
+                const currentAgency = document.getElementById('currentAgency');
+                const sendButton = document.getElementById('sendButton');
+                
+                if (status.is_sending) {
+                    statusDiv.style.display = 'block';
+                    sendButton.disabled = true;
+                    
+                    const progress = (status.current / status.total) * 100;
+                    progressBar.style.width = progress + '%';
+                    progressText.textContent = `${status.current}/${status.total}`;
+                    currentAgency.textContent = status.current_agency;
+                } else {
+                    statusDiv.style.display = 'none';
+                    sendButton.disabled = false;
+                }
+            });
+        }
+
+        // Actualizar estado cada segundo
+        setInterval(updateSendingStatus, 1000);
+
+        // Función para enviar un correo individual
+        function sendEmail(clientId) {
+            if (!confirm('¿Estás seguro de que deseas enviar este correo?')) {
+                return;
+            }
+
+            const saveDraft = document.getElementById('saveDraft').checked;
+            fetch(`/send-email/${clientId}?draft=${saveDraft}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        location.reload();
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                });
+        }
+
+        // Función para enviar todos los correos pendientes
+        async function sendAllEmails() {
+            if (!confirm('¿Estás seguro de que deseas procesar todos los correos pendientes?')) {
+                return;
+            }
+            
+            const delay = document.getElementById('delayTime').value;
+            const saveDraft = document.getElementById('saveDraft').checked;
+            
+            fetch(`/send-all?delay=${delay}&draft=${saveDraft}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Proceso iniciado: ' + data.message);
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error al iniciar el proceso');
+                });
+        }
+
+        // Función para eliminar un PDF específico
+        function deletePDF(filename) {
+            if (!confirm(`¿Estás seguro de que deseas eliminar el archivo ${filename}?`)) {
+                return;
+            }
+
+            fetch(`/delete-pdf/${filename}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+        }
+
+        // Función para eliminar todos los PDFs
+        function deleteAllPDFs() {
+            if (!confirm('¿Estás seguro de que deseas eliminar TODOS los PDFs?')) {
+                return;
+            }
+
+            fetch('/delete-all-pdfs')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+        }
+
+        // Función para limpiar la base de datos
+        function clearDatabase() {
+            if (!confirm('¿Estás seguro de que deseas limpiar TODOS los registros de la base de datos?')) {
+                return;
+            }
+
+            fetch('/clear-database')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+        }
+
+        // Función para limpiar logs
+        function clearLogs() {
+            if (!confirm('¿Estás seguro de que deseas limpiar todos los logs?')) {
+                return;
+            }
+
+            fetch('/clear-logs')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
