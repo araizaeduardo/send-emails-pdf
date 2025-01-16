@@ -9,95 +9,61 @@ class OutlookSender:
     def __init__(self):
         pass
 
-    def send_email(self, client: Dict, pdf_path: str, save_as_draft: bool = False) -> bool:
+    def send_email(self, client: Dict, pdf_path: str, save_as_draft: bool = False, template: Dict = None) -> bool:
         """
-        Envía un correo usando Outlook o lo guarda como borrador
-        Args:
-            client (Dict): Diccionario con datos del cliente
-            pdf_path (str): Ruta al archivo PDF a adjuntar
-            save_as_draft (bool): Si es True, guarda el correo como borrador en lugar de enviarlo
-        Returns:
-            bool: True si la operación fue exitosa, False en caso contrario
+        Envía un correo electrónico usando Outlook
         """
-        # Inicializar COM para este hilo
-        pythoncom.CoInitialize()
-        
         try:
-            if not os.path.exists(pdf_path):
-                raise Exception(f"PDF no encontrado: {pdf_path}")
-
-            # Crear una nueva instancia de Outlook
-            try:
-                outlook = win32com.client.Dispatch('Outlook.Application')
-            except Exception as e:
-                raise Exception(f"Error al conectar con Outlook: {str(e)}")
-
-            # Crear el mensaje
-            try:
-                mail = outlook.CreateItem(0)  # 0 = olMailItem
-            except Exception as e:
-                raise Exception(f"Error al crear mensaje de Outlook: {str(e)}")
-
-            try:
-                mail.Subject = "Formulario 1099-NEC – Comisiones Recibidas"
-                mail.To = client['Report email']
-            except Exception as e:
-                raise Exception(f"Error al establecer destinatario o asunto: {str(e)}")
+            # Inicializar COM antes de usar Outlook
+            pythoncom.CoInitialize()
             
-            # Cuerpo del mensaje
-            try:
-                mail.HTMLBody = """
-                <p>Estimado/a dueño/a de agencia,</p>
-
-                <p>Adjunto a este mensaje encontrará el formulario 1099-NEC correspondiente a las comisiones recibidas durante el período de ventas con Paseo Travel & Tours, Inc.</p>
-
-                <p>El total reflejado puede incluir montos de ventas MCO, las cuales también se reportan. Si necesita un desglose detallado, puede solicitar el reporte de las ventas asociadas a las 890.</p>
-
-                <p>Le pedimos que revise cuidadosamente la información contenida en el formulario. En caso de identificar algún error o si necesita una copia impresa, por favor comuníquese con nosotros a más tardar el 28 de enero al (818) 244-2184 para solicitar la corrección correspondiente.</p>
-
-                <p>Agradecemos su atención y quedamos atentos a cualquier consulta.</p>
-
-                <p>Atentamente,<br>
-                Departamento de Contabilidad<br>
-                Paseo Travel & Tours, Inc.</p>
-
-                <hr>
-
-                <p><small><strong>Aviso de Confidencialidad:</strong> Este mensaje contiene información confidencial y está dirigido únicamente al destinatario indicado. Si usted no es el destinatario, queda estrictamente prohibida la distribución, copia o divulgación de este correo electrónico. Si lo ha recibido por error, por favor notifíquelo al remitente inmediatamente y elimine el mensaje de su sistema.</p>
-
-                <p>Tenga en cuenta que la transmisión por correo electrónico no puede garantizarse como segura o libre de errores, ya que la información puede ser interceptada, dañada, perdida, llegar incompleta o contener virus. Paseo Travel & Tours, Inc. no asume responsabilidad por errores u omisiones en el contenido de este mensaje. Si necesita verificación, solicite una versión en papel.</small></p>
-
-                <p><small>Paseo Travel & Tours, Inc.<br>
-                PO BOX 10060, Glendale, CA 91209<br>
-                <a href="http://www.paseotravel.us">www.paseotravel.us</a></small></p>
+            outlook = win32com.client.Dispatch('Outlook.Application')
+            mail = outlook.CreateItem(0)  # 0 = olMailItem
+            
+            mail.To = client['Report email']
+            
+            # Usar plantilla si está disponible
+            if template:
+                mail.Subject = template['subject']
+                mail.HTMLBody = template['body']
+            else:
+                mail.Subject = f"New Message - {client['Agency Code']}"
+                mail.HTMLBody = f"""
+                    <p>Dear Client,</p>
+                    <p>Please find attached.</p>
+                    <p>Best regards,</p>
                 """
-            except Exception as e:
-                raise Exception(f"Error al establecer el cuerpo del mensaje: {str(e)}")
-
+            
             # Adjuntar PDF
-            try:
+            if os.path.exists(pdf_path):
                 mail.Attachments.Add(pdf_path)
-            except Exception as e:
-                raise Exception(f"Error al adjuntar PDF: {str(e)}")
-
-            # Enviar el correo o guardarlo como borrador
-            try:
-                if save_as_draft:
-                    mail.Save()
-                    print(f"Correo guardado como borrador para {client['Report email']}")
-                else:
-                    mail.Send()
-                    print(f"Correo enviado exitosamente a {client['Report email']}")
+            else:
+                raise Exception(f"PDF no encontrado: {pdf_path}")
+            
+            if save_as_draft:
+                mail.Save()
+                print(f"Correo guardado como borrador para {client['Report email']}")
+            else:
+                mail.Send()
+                print(f"Correo enviado exitosamente a {client['Report email']}")
                 return True
-            except Exception as e:
-                raise Exception(f"Error al {'guardar' if save_as_draft else 'enviar'} el correo: {str(e)}")
-
+                
         except Exception as e:
-            print(f"Error al procesar correo para {client['Report email']}: {str(e)}")
-            raise e
+            # Capturar errores específicos de Outlook
+            if "Outlook" in str(e):
+                raise Exception("Error al conectar con Outlook. Asegúrate de que Outlook esté abierto y configurado.")
+            elif "Attachments" in str(e):
+                raise Exception("Error al adjuntar el archivo PDF. Verifica que el archivo exista y no esté dañado.")
+            else:
+                raise Exception(f"Error al enviar el correo: {str(e)}")
+
         finally:
             # Liberar COM al terminar
             pythoncom.CoUninitialize()
+            try:
+                pythoncom.CoUninitialize()
+            except:
+                pass
 
 def main():
     # Inicializar manejador de base de datos y Outlook

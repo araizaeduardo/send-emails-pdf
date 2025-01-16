@@ -1,7 +1,7 @@
 # Actualizaciones Futuras - Sistema de Envío de Correos
 
 ## Gestión de Correos 📧
-- [ ] Previsualización de correos antes de enviar
+- [x] Previsualización de correos antes de enviar
 - [ ] Plantillas de correo personalizables
 - [ ] Historial de correos enviados con estado (enviado/fallido)
 - [ ] Reenvío automático de correos fallidos
@@ -64,8 +64,24 @@
 - ✅ Guardado de borradores
 - ✅ Interfaz web básica
 
+### 2025-01-16
+### Sistema de Plantillas de Correo
+- ✅ Implementado sistema de gestión de plantillas
+  - Creación, edición y eliminación de plantillas
+  - Vista previa de plantillas antes de enviar
+  - Plantilla por defecto para correos 1099-NEC
+  - Selección de plantilla al enviar correos
+
+### Mejoras en la Interfaz
+- ✅ Reorganización de la interfaz para mejor usabilidad
+  - PDFs Disponibles y Correos Pendientes en la parte superior
+  - Correos Enviados en sección central
+  - Registro de Actividades en la parte inferior
+- ✅ Ajustes visuales y de espaciado para mejor legibilidad
+- ✅ Botón de vista previa integrado con selector de plantillas
+
 ### Próxima Versión Planificada
-- 🔄 Previsualización de correos
+- ✅ Previsualización de correos
 - 🔄 Historial de envíos
 - 🔄 Búsqueda de agencias
 - 🔄 Vista previa de PDFs

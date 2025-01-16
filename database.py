@@ -14,13 +14,95 @@ class DatabaseManager:
 
     def connect(self):
         """Establece conexión con la base de datos"""
-        self.conn = sqlite3.connect(self.db_name)
-        self.cursor = self.conn.cursor()
+        try:
+            if self.conn is None:
+                self.conn = sqlite3.connect(self.db_name)
+                self.cursor = self.conn.cursor()
+        except Exception as e:
+            print(f"Error al conectar a la base de datos: {str(e)}")
+            raise
 
     def close(self):
         """Cierra la conexión con la base de datos"""
-        if self.conn:
-            self.conn.close()
+        try:
+            if self.cursor:
+                self.cursor.close()
+            if self.conn:
+                self.conn.commit()
+                self.conn.close()
+        except Exception as e:
+            print(f"Error al cerrar la base de datos: {str(e)}")
+        finally:
+            self.cursor = None
+            self.conn = None
+
+    def ensure_connection(self):
+        """Asegura que hay una conexión activa"""
+        try:
+            if self.conn is None or self.cursor is None:
+                self.connect()
+            # Verificar que la conexión está activa
+            self.cursor.execute("SELECT 1")
+        except (sqlite3.Error, AttributeError):
+            # Si hay algún error, intentar reconectar
+            self.close()
+            self.connect()
+
+    def setup_database(self):
+        """Configura la base de datos con las tablas necesarias"""
+        try:
+            self.ensure_connection()
+            
+            # Tabla de clientes
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS clients (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "Agency Code" TEXT NOT NULL,
+                    "Report email" TEXT NOT NULL,
+                    email_sent INTEGER DEFAULT 0,
+                    sent_date DATETIME
+                )
+            ''')
+
+            # Tabla de logs
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS activity_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    agency_code TEXT,
+                    action TEXT,
+                    status TEXT,
+                    message TEXT
+                )
+            ''')
+
+            # Tabla de correos enviados
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sent_emails (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agency_code TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    sent_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT,
+                    message TEXT
+                )
+            ''')
+
+            # Tabla de plantillas de correo
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS email_templates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    is_default INTEGER DEFAULT 0
+                )
+            ''')
+
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error en setup_database: {str(e)}")
+            raise
 
     def import_from_excel(self, excel_path: str):
         """
@@ -28,9 +110,8 @@ class DatabaseManager:
         Args:
             excel_path (str): Ruta al archivo Excel
         """
-        self.connect()  # Conectar al inicio
         try:
-            # Leer Excel
+            # Leer Excel primero para validar
             df = pd.read_excel(excel_path)
             
             # Asegurarse de que existan las columnas necesarias
@@ -42,7 +123,8 @@ class DatabaseManager:
             df['email_sent'] = 0
             df['sent_date'] = None
             
-            # Crear tablas si no existen
+            # Asegurar conexión y configuración de la base de datos
+            self.ensure_connection()
             self.setup_database()
             
             # Importar datos
@@ -53,82 +135,64 @@ class DatabaseManager:
             self.add_log('SYSTEM', 'import_excel', 'success', f'Datos importados exitosamente desde {excel_path}')
             
             return True, "Datos importados exitosamente"
+            
+        except pd.errors.EmptyDataError:
+            return False, "El archivo Excel está vacío"
         except Exception as e:
             error_msg = f"Error al importar datos: {str(e)}"
-            if self.conn:  # Solo agregar log si hay conexión
-                self.add_log('SYSTEM', 'import_excel', 'error', error_msg)
+            try:
+                if self.conn and self.cursor:
+                    self.add_log('SYSTEM', 'import_excel', 'error', error_msg)
+            except:
+                pass
             return False, error_msg
-        finally:
-            if self.conn:
-                self.close()
 
-    def get_pending_clients(self) -> List[Dict]:
+    def get_pending_clients(self):
         """
-        Obtiene la lista de clientes pendientes por enviar correo
-        Returns:
-            List[Dict]: Lista de diccionarios con datos de clientes
+        Obtiene los clientes que aún no han recibido el correo
         """
         try:
-            self.connect()
-            self.cursor.execute("SELECT * FROM clients WHERE email_sent = 0 OR email_sent IS NULL")
-            columns = [description[0] for description in self.cursor.description]
-            clients = []
-            for row in self.cursor.fetchall():
-                clients.append(dict(zip(columns, row)))
-            return clients
+            self.ensure_connection()
+            self.cursor.execute('''
+                SELECT id, "Agency Code" as agency_code, "Report email" as email
+                FROM clients c
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sent_emails s
+                    WHERE s.agency_code = c."Agency Code"
+                    AND s.status = 'success'
+                )
+            ''')
+            return [{
+                'id': row[0],
+                'agency_code': row[1],
+                'email': row[2]
+            } for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Error al obtener clientes pendientes: {str(e)}")
+            return []
         finally:
             self.close()
 
-    def mark_email_sent(self, client_id: int):
+    def get_client_by_id(self, client_id):
         """
-        Marca un correo como enviado en la base de datos
-        Args:
-            client_id (int): ID del cliente
+        Obtiene un cliente por su ID
         """
         try:
-            self.connect()
-            self.cursor.execute("""
-                UPDATE clients 
-                SET email_sent = 1,
-                    sent_date = CURRENT_TIMESTAMP
+            self.ensure_connection()
+            self.cursor.execute('''
+                SELECT "Agency Code", "Report email"
+                FROM clients
                 WHERE id = ?
-            """, (client_id,))
-            self.conn.commit()
-        finally:
-            self.close()
-
-    def get_sent_emails(self) -> List[Dict]:
-        """
-        Obtiene la lista de correos ya enviados
-        Returns:
-            List[Dict]: Lista de diccionarios con datos de correos enviados
-        """
-        try:
-            self.connect()
-            self.cursor.execute("SELECT * FROM clients WHERE email_sent = 1")
-            columns = [description[0] for description in self.cursor.description]
-            clients = []
-            for row in self.cursor.fetchall():
-                clients.append(dict(zip(columns, row)))
-            return clients
-        finally:
-            self.close()
-
-    def get_client(self, client_id: int) -> Dict:
-        """
-        Obtiene los datos de un cliente específico
-        Args:
-            client_id (int): ID del cliente
-        Returns:
-            Dict: Datos del cliente
-        """
-        try:
-            self.connect()
-            self.cursor.execute("SELECT * FROM clients WHERE id = ?", (client_id,))
-            columns = [description[0] for description in self.cursor.description]
+            ''', (client_id,))
             row = self.cursor.fetchone()
             if row:
-                return dict(zip(columns, row))
+                return {
+                    'Agency Code': row[0],
+                    'Report email': row[1]
+                }
+            return None
+        except Exception as e:
+            print(f"Error al obtener cliente: {str(e)}")
             return None
         finally:
             self.close()
@@ -138,7 +202,7 @@ class DatabaseManager:
         Limpia todos los registros de la base de datos
         """
         try:
-            self.connect()
+            self.ensure_connection()
             self.cursor.execute("DELETE FROM clients")
             self.conn.commit()
         finally:
@@ -151,7 +215,7 @@ class DatabaseManager:
             agency_code (str, optional): Código de agencia específico. Si es None, resetea todos.
         """
         try:
-            self.connect()
+            self.ensure_connection()
             if agency_code:
                 self.cursor.execute("""
                     UPDATE clients 
@@ -176,7 +240,7 @@ class DatabaseManager:
             agency_code (str): Código de agencia del cliente a eliminar
         """
         try:
-            self.connect()
+            self.ensure_connection()
             self.cursor.execute("""
                 DELETE FROM clients 
                 WHERE "Agency Code" = ?
@@ -190,82 +254,221 @@ class DatabaseManager:
         Elimina todos los clientes de la base de datos
         """
         try:
-            self.connect()
+            self.ensure_connection()
             self.cursor.execute("DELETE FROM clients")
             self.conn.commit()
         finally:
             self.close()
 
-    def setup_database(self):
+    def clear_clients(self):
         """
-        Configura las tablas necesarias en la base de datos
-        """
-        # No conectamos aquí, asumimos que ya hay una conexión activa
-        # Tabla de clientes
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS clients (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                "Agency Code" TEXT,
-                "Report email" TEXT,
-                email_sent INTEGER DEFAULT 0,
-                sent_date TIMESTAMP
-            )
-        """)
-        
-        # Tabla de logs
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS email_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                agency_code TEXT,
-                action TEXT,
-                status TEXT,
-                message TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        self.conn.commit()
-
-    def add_log(self, agency_code: str, action: str, status: str, message: str):
-        """
-        Agrega un registro al log
+        Elimina todos los clientes de la base de datos
         """
         try:
-            self.connect()
-            self.cursor.execute("""
-                INSERT INTO email_logs (agency_code, action, status, message)
-                VALUES (?, ?, ?, ?)
-            """, (agency_code, action, status, message))
+            self.ensure_connection()
+            self.cursor.execute('DELETE FROM clients')
             self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al limpiar la base de datos: {str(e)}")
+            return False
         finally:
             self.close()
 
-    def get_logs(self, limit: int = 100):
+    def get_all_templates(self):
         """
-        Obtiene los últimos registros del log
+        Obtiene todas las plantillas de correo
         """
         try:
-            self.connect()
-            self.cursor.execute("""
-                SELECT * FROM email_logs
+            self.ensure_connection()
+            self.cursor.execute('SELECT id, name, subject, body, is_default FROM email_templates ORDER BY is_default DESC, name')
+            templates = self.cursor.fetchall()
+            return [{
+                'id': t[0],
+                'name': t[1],
+                'subject': t[2],
+                'body': t[3],
+                'is_default': t[4]
+            } for t in templates]
+        except Exception as e:
+            print(f"Error al obtener plantillas: {str(e)}")
+            return []
+        finally:
+            self.close()
+
+    def get_template(self, template_id):
+        """
+        Obtiene una plantilla específica por ID
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('SELECT id, name, subject, body FROM email_templates WHERE id = ?', (template_id,))
+            t = self.cursor.fetchone()
+            if t:
+                return {
+                    'id': t[0],
+                    'name': t[1],
+                    'subject': t[2],
+                    'body': t[3]
+                }
+            return None
+        except Exception as e:
+            print(f"Error al obtener plantilla: {str(e)}")
+            return None
+        finally:
+            self.close()
+
+    def add_template(self, name, subject, body):
+        """
+        Agrega una nueva plantilla
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('''
+                INSERT INTO email_templates (name, subject, body)
+                VALUES (?, ?, ?)
+            ''', (name, subject, body))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al agregar plantilla: {str(e)}")
+            return False
+        finally:
+            self.close()
+
+    def update_template(self, template_id, name, subject, body):
+        """
+        Actualiza una plantilla existente
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('''
+                UPDATE email_templates
+                SET name = ?, subject = ?, body = ?
+                WHERE id = ?
+            ''', (name, subject, body, template_id))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al actualizar plantilla: {str(e)}")
+            return False
+        finally:
+            self.close()
+
+    def delete_template(self, template_id):
+        """
+        Elimina una plantilla (no permite eliminar la plantilla por defecto)
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('DELETE FROM email_templates WHERE id = ? AND is_default = 0', (template_id,))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al eliminar plantilla: {str(e)}")
+            return False
+        finally:
+            self.close()
+
+    def add_log(self, agency_code: str, action: str, status: str, message: str = None):
+        """
+        Agrega un registro al log de actividades
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('''
+                INSERT INTO activity_logs (agency_code, action, status, message)
+                VALUES (?, ?, ?, ?)
+            ''', (agency_code, action, status, message))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al agregar log: {str(e)}")
+            return False
+        finally:
+            self.close()
+
+    def get_logs(self):
+        """
+        Obtiene todos los registros del log de actividades
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('''
+                SELECT timestamp, agency_code, action, status, message
+                FROM activity_logs
                 ORDER BY timestamp DESC
-                LIMIT ?
-            """, (limit,))
-            columns = [description[0] for description in self.cursor.description]
-            logs = []
-            for row in self.cursor.fetchall():
-                logs.append(dict(zip(columns, row)))
-            return logs
+            ''')
+            return [{
+                'timestamp': row[0],
+                'agency_code': row[1],
+                'action': row[2],
+                'status': row[3],
+                'message': row[4]
+            } for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Error al obtener logs: {str(e)}")
+            return []
         finally:
             self.close()
 
     def clear_logs(self):
         """
-        Limpia todos los logs
+        Elimina todos los registros del log de actividades
         """
         try:
-            self.connect()
-            self.cursor.execute("DELETE FROM email_logs")
+            self.ensure_connection()
+            self.cursor.execute('DELETE FROM activity_logs')
             self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al limpiar logs: {str(e)}")
+            return False
+        finally:
+            self.close()
+
+    def add_sent_email(self, agency_code: str, email: str, status: str, message: str):
+        """
+        Registra un correo enviado en la base de datos
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('''
+                INSERT INTO sent_emails (agency_code, email, sent_date, status, message)
+                VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?)
+            ''', (agency_code, email, status, message))
+            
+            # También registrar en el log
+            self.add_log(agency_code, 'send_email', status, message)
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error al registrar correo enviado: {str(e)}")
+            return False
+        finally:
+            self.close()
+
+    def get_sent_emails(self):
+        """
+        Obtiene todos los correos enviados
+        """
+        try:
+            self.ensure_connection()
+            self.cursor.execute('''
+                SELECT agency_code, email, sent_date, status, message
+                FROM sent_emails
+                ORDER BY sent_date DESC
+            ''')
+            return [{
+                'agency_code': row[0],
+                'email': row[1],
+                'sent_date': row[2],
+                'status': row[3],
+                'message': row[4]
+            } for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Error al obtener correos enviados: {str(e)}")
+            return []
         finally:
             self.close()
