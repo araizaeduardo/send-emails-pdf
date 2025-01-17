@@ -60,7 +60,8 @@ class DatabaseManager:
                     "Agency Code" TEXT NOT NULL,
                     "Report email" TEXT NOT NULL,
                     email_sent INTEGER DEFAULT 0,
-                    sent_date DATETIME
+                    sent_date DATETIME,
+                    has_pdf BOOLEAN DEFAULT FALSE
                 )
             ''')
 
@@ -96,6 +97,17 @@ class DatabaseManager:
                     subject TEXT NOT NULL,
                     body TEXT NOT NULL,
                     is_default INTEGER DEFAULT 0
+                )
+            ''')
+
+            # Tabla de PDFs pendientes
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS pending_pdfs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agency_code TEXT NOT NULL,
+                    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    processed BOOLEAN DEFAULT FALSE,
+                    processed_date TIMESTAMP
                 )
             ''')
 
@@ -472,3 +484,117 @@ class DatabaseManager:
             return []
         finally:
             self.close()
+
+    def get_pending_pdfs(self):
+        """Obtiene todos los PDFs pendientes de procesamiento"""
+        try:
+            self.ensure_connection()
+            self.cursor.execute("""
+                SELECT id, agency_code, upload_date 
+                FROM pending_pdfs 
+                WHERE processed = FALSE
+            """)
+            return [{
+                'id': row[0],
+                'agency_code': row[1],
+                'upload_date': row[2]
+            } for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"Error al obtener PDFs pendientes: {str(e)}")
+            return []
+
+    def add_pending_pdf(self, agency_code):
+        """Agrega un nuevo PDF pendiente"""
+        try:
+            self.ensure_connection()
+            self.cursor.execute("""
+                INSERT INTO pending_pdfs (
+                    agency_code, 
+                    upload_date
+                ) VALUES (?, CURRENT_TIMESTAMP)
+            """, (agency_code,))
+            self.conn.commit()
+            self.add_log('DATABASE', 'add_pending_pdf', 'success', 
+                        f'PDF pendiente agregado: {agency_code}')
+            return True
+        except Exception as e:
+            self.add_log('DATABASE', 'add_pending_pdf', 'error', str(e))
+            return False
+
+    def mark_pdf_as_processed(self, agency_code):
+        """Marca un PDF como procesado"""
+        try:
+            self.ensure_connection()
+            self.cursor.execute("""
+                UPDATE pending_pdfs 
+                SET processed = TRUE,
+                    processed_date = CURRENT_TIMESTAMP 
+                WHERE agency_code = ? 
+                AND processed = FALSE
+            """, (agency_code,))
+            self.conn.commit()
+            self.add_log('DATABASE', 'mark_pdf_as_processed', 'success', 
+                        f'PDF marcado como procesado: {agency_code}')
+            return True
+        except Exception as e:
+            self.add_log('DATABASE', 'mark_pdf_as_processed', 'error', str(e))
+            return False
+
+    def get_client_by_agency_code(self, agency_code):
+        """Obtiene un cliente por su código de agencia"""
+        try:
+            self.ensure_connection()
+            query = """
+                SELECT id, "Agency Code", "Report email"
+                FROM clients 
+                WHERE "Agency Code" = ?
+            """
+            print(f"Ejecutando query: {query} con código: {agency_code}")  # Debug
+            
+            self.cursor.execute(query, (agency_code,))
+            row = self.cursor.fetchone()
+            print(f"Resultado de la consulta: {row}")  # Debug
+            
+            if row:
+                return {
+                    'id': row[0],
+                    'agency_code': row[1],
+                    'email': row[2]
+                }
+            return None
+        except Exception as e:
+            print(f"Error en get_client_by_agency_code: {str(e)}")  # Debug
+            return None
+
+    def update_client_pdf_status(self, agency_code, has_pdf):
+        """Actualiza el estado del PDF de un cliente"""
+        try:
+            self.ensure_connection()
+            query = """
+                UPDATE clients 
+                SET has_pdf = ? 
+                WHERE "Agency Code" = ?
+            """
+            print(f"Ejecutando update: {query}")  # Debug
+            print(f"Parámetros: has_pdf={has_pdf}, agency_code={agency_code}")  # Debug
+            
+            self.cursor.execute(query, (has_pdf, agency_code))
+            
+            # Verificar si se actualizó algún registro
+            rows_affected = self.cursor.rowcount
+            print(f"Filas afectadas: {rows_affected}")  # Debug
+            
+            if rows_affected > 0:
+                self.conn.commit()
+                self.add_log('DATABASE', 'update_pdf_status', 'success', 
+                            f'Estado de PDF actualizado para {agency_code}')
+                return True
+            else:
+                self.add_log('DATABASE', 'update_pdf_status', 'warning', 
+                            f'No se encontró cliente para {agency_code}')
+                return False
+            
+        except Exception as e:
+            print(f"Error en update_client_pdf_status: {str(e)}")  # Debug
+            self.add_log('DATABASE', 'update_pdf_status', 'error', str(e))
+            return False

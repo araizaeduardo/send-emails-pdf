@@ -39,13 +39,21 @@
 
         <div class="row">
             <!-- PDFs Disponibles -->
-            <div class="col-md-4">
+            <div class="col-md-6">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">PDFs Disponibles</h5>
-                        <button class="btn btn-danger btn-sm" onclick="deleteAllPDFs()">
-                            <i class="fas fa-trash"></i> Eliminar Todo
-                        </button>
+                        <div>
+                            <button class="btn btn-info btn-sm me-2" onclick="scanPDFs()">
+                                <i class="fas fa-sync"></i> Escanear PDFs
+                            </button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteAllPDFs()">
+                                <i class="fas fa-trash"></i> Eliminar Todo
+                            </button>
+                            <button class="btn btn-primary btn-sm" onclick="matchExisting()">
+                                <i class="fas fa-link"></i> Vincular Existentes
+                            </button>
+                        </div>
                     </div>
                     <div class="card-body">
                         <ul class="list-group">
@@ -65,7 +73,7 @@
             </div>
 
             <!-- Correos Pendientes -->
-            <div class="col-md-8">
+            <div class="col-md-6">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">Correos Pendientes</h5>
@@ -104,23 +112,40 @@
                             </div>
                         </div>
                         <div class="table-responsive">
-                            <table class="table table-hover">
+                            <table class="table table-sm table-hover">
                                 <thead>
                                     <tr>
-                                        <th>Código</th>
-                                        <th>Email</th>
-                                        <th>Acciones</th>
+                                        <th style="width: 15%">Código</th>
+                                        <th style="width: 35%">Email</th>
+                                        <th style="width: 20%">Estado PDF</th>
+                                        <th style="width: 30%">Acciones</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {% for email in pending_emails %}
                                     <tr>
                                         <td>{{ email.agency_code }}</td>
-                                        <td>{{ email.email }}</td>
+                                        <td class="text-truncate" style="max-width: 200px;" title="{{ email.email }}">
+                                            {{ email.email }}
+                                        </td>
                                         <td>
-                                            <button class="btn btn-sm btn-primary" onclick="sendEmail({{ email.id }})">
-                                                <i class="fas fa-paper-plane"></i>
-                                            </button>
+                                            {% if email.has_pdf %}
+                                            <span class="badge bg-success">PDF ✓</span>
+                                            {% else %}
+                                            <span class="badge bg-warning">Sin PDF</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            <div class="btn-group btn-group-sm">
+                                                {% if not email.has_pdf %}
+                                                <button class="btn btn-outline-primary" onclick="linkPDF('{{ email.agency_code }}')" title="Vincular PDF">
+                                                    <i class="fas fa-link"></i>
+                                                </button>
+                                                {% endif %}
+                                                <button class="btn btn-primary" onclick="sendEmail('{{ email.id }}')" title="Enviar Email">
+                                                    <i class="fas fa-envelope"></i>
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                     {% endfor %}
@@ -134,7 +159,46 @@
                         </div>
                     </div>
                 </div>
-            </div>            
+            </div>
+        </div>
+
+        <!-- Nueva fila para PDFs Pendientes -->
+        <div class="row mt-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">PDFs Pendientes de Vinculación</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Código Agencia</th>
+                                        <th>Fecha Subida</th>
+                                        <th>Estado</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pendingPdfsTable">
+                                    {% for pdf in pending_pdfs %}
+                                    <tr>
+                                        <td>{{ pdf.agency_code }}</td>
+                                        <td>{{ pdf.upload_date }}</td>
+                                        <td>
+                                            <span class="badge bg-warning">Pendiente</span>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <td colspan="3" class="text-center">No hay PDFs pendientes</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Registro de Actividades -->
@@ -640,13 +704,117 @@
                 
                 if (data.success) {
                     alert(data.message);
-                    location.reload();
+                    loadPendingPdfs();  // Actualizar lista de pendientes
+                    location.reload();   // Recargar lista de PDFs disponibles
                 } else {
                     alert('Error: ' + data.message);
                 }
             } catch (error) {
                 alert('Error al subir los archivos: ' + error);
             }
+        }
+
+        // Función para cargar PDFs pendientes
+        function loadPendingPdfs() {
+            fetch('/pending-pdfs')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const tbody = document.getElementById('pendingPdfsTable');
+                        tbody.innerHTML = '';
+                        
+                        data.pending.forEach(pdf => {
+                            const tr = document.createElement('tr');
+                            tr.innerHTML = `
+                                <td>${pdf.agency_code}</td>
+                                <td>${new Date(pdf.upload_date).toLocaleString()}</td>
+                                <td>
+                                    <span class="badge bg-warning">Pendiente</span>
+                                </td>
+                            `;
+                            tbody.appendChild(tr);
+                        });
+
+                        if (data.pending.length === 0) {
+                            tbody.innerHTML = `
+                                <tr>
+                                    <td colspan="3" class="text-center">No hay PDFs pendientes</td>
+                                </tr>
+                            `;
+                        }
+                    }
+                })
+                .catch(error => console.error('Error cargando PDFs pendientes:', error));
+        }
+
+        // Agregar al DOMContentLoaded
+        document.addEventListener('DOMContentLoaded', function() {
+            loadTemplates();
+            loadPendingPdfs();
+        });
+
+        function scanPDFs() {
+            fetch('/scan-pdfs', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error al escanear PDFs');
+            });
+        }
+
+        function matchExisting() {
+            fetch('/match-existing', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error al vincular PDFs existentes');
+            });
+        }
+
+        function linkPDF(agencyCode) {
+            const pdfFile = prompt('Ingrese el nombre del archivo PDF (ejemplo: 5009.pdf):');
+            if (!pdfFile) return;
+
+            fetch(`/link-pdf/${agencyCode}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ pdf_name: pdfFile })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert(data.message);
+                    location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error al vincular PDF');
+            });
         }
     </script>
 </body>

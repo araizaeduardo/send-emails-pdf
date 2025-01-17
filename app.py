@@ -7,6 +7,8 @@ from datetime import datetime
 import shutil
 import time
 import uuid
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 app = Flask(__name__)
 
@@ -32,6 +34,43 @@ sending_status = {
 # Crear instancia del manejador de Outlook
 mailer = OutlookSender()
 
+class PDFHandler(FileSystemEventHandler):
+    def __init__(self, app):
+        self.app = app
+        self.db = DatabaseManager()
+
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith('.pdf'):
+            with self.app.app_context():
+                try:
+                    # Obtener el nombre del archivo sin la ruta
+                    filename = os.path.basename(event.src_path)
+                    # Extraer el código de agencia del nombre del archivo
+                    agency_code = filename.replace('.pdf', '')
+                    
+                    # Verificar si existe el cliente
+                    client = self.db.get_client_by_agency_code(agency_code)
+                    
+                    if client:
+                        self.db.update_client_pdf_status(agency_code, True)
+                        self.db.add_log('SYSTEM', 'auto_pdf_import', 'success', 
+                                      f'PDF {filename} vinculado automáticamente')
+                    else:
+                        self.db.add_pending_pdf(agency_code)
+                        self.db.add_log('SYSTEM', 'auto_pdf_import', 'pending', 
+                                      f'PDF {filename} agregado a pendientes')
+                except Exception as e:
+                    self.db.add_log('SYSTEM', 'auto_pdf_import', 'error', 
+                                  f'Error procesando {filename}: {str(e)}')
+
+def setup_pdf_watcher(app):
+    event_handler = PDFHandler(app)
+    observer = Observer()
+    observer.schedule(event_handler, path=app.config['UPLOAD_FOLDER'], recursive=False)
+    observer.start()
+    app.logger.info('PDF watcher iniciado')
+    return observer
+
 @app.route('/')
 def index():
     try:
@@ -39,20 +78,24 @@ def index():
         pdfs = [f for f in os.listdir(app.config['UPLOAD_FOLDER']) if f.endswith('.pdf')]
         
         # Obtener registros de la base de datos
-        sent_emails = db.get_sent_emails()
-        pending_emails = db.get_pending_clients()
-        
-        # Obtener logs
-        logs = db.get_logs()  # Eliminado el parámetro limit
+        db_instance = DatabaseManager()
+        sent_emails = db_instance.get_sent_emails()
+        pending_emails = db_instance.get_pending_clients()
+        pending_pdfs = db_instance.get_pending_pdfs()
+        logs = db_instance.get_logs()
         
         return render_template('index.html', 
                              pdfs=pdfs,
                              sent_emails=sent_emails,
                              pending_emails=pending_emails,
+                             pending_pdfs=pending_pdfs,
                              logs=logs,
                              sending_status=sending_status)
     except Exception as e:
         return f"Error: {str(e)}"
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
 
 @app.route('/get-status')
 def get_status():
@@ -358,20 +401,39 @@ def delete_all_pdfs():
         # Obtener lista de PDFs
         pdfs = [f for f in os.listdir(app.config['UPLOAD_FOLDER']) if f.endswith('.pdf')]
         
-        # Eliminar cada PDF
+        # Eliminar PDFs físicos si existen
         for pdf in pdfs:
             pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf)
             os.remove(pdf_path)
         
+        # Limpiar registros en la base de datos
+        db_instance = DatabaseManager()
+        db_instance.ensure_connection()  # Asegurar conexión
+        
+        # Verificar si existe la columna has_pdf
+        db_instance.cursor.execute("PRAGMA table_info(clients)")
+        columns = [col[1] for col in db_instance.cursor.fetchall()]
+        
+        # Resetear has_pdf en clients si existe la columna
+        if 'has_pdf' in columns:
+            db_instance.cursor.execute("UPDATE clients SET has_pdf = FALSE")
+        
+        # Limpiar tabla de PDFs pendientes
+        db_instance.cursor.execute("DELETE FROM pending_pdfs")
+        db_instance.conn.commit()
+        
         return jsonify({
             'success': True,
-            'message': f'Se eliminaron {len(pdfs)} archivos PDF correctamente'
+            'message': f'Se eliminaron {len(pdfs)} archivos PDF y se limpiaron todos los registros de vinculación'
         })
     except Exception as e:
         return jsonify({
             'success': False,
             'message': f'Error al eliminar PDFs: {str(e)}'
         })
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
 
 @app.route('/clear-database', methods=['POST'])
 def clear_database():
@@ -514,7 +576,11 @@ def upload_pdfs():
 
         files = request.files.getlist('pdfs')
         uploaded_count = 0
+        matched_count = 0
+        pending_count = 0
         errors = []
+
+        db_instance = DatabaseManager()
 
         for file in files:
             if file.filename == '':
@@ -522,22 +588,301 @@ def upload_pdfs():
 
             if file and file.filename.endswith('.pdf'):
                 try:
-                    filename = file.filename
-                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                    # Extraer el código de agencia del nombre del archivo
+                    agency_code = file.filename.replace('.pdf', '')
+                    
+                    # Guardar el PDF
+                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], file.filename))
                     uploaded_count += 1
-                except Exception as e:
-                    errors.append(f"Error al subir {filename}: {str(e)}")
 
-        if uploaded_count > 0:
-            message = f'Se subieron {uploaded_count} archivos PDF correctamente'
-            if errors:
-                message += f'\nErrores: {", ".join(errors)}'
-            return jsonify({'success': True, 'message': message})
-        else:
-            return jsonify({'success': False, 'message': 'No se pudo subir ningún archivo PDF'})
+                    # Verificar si existe el cliente
+                    client = db_instance.get_client_by_agency_code(agency_code)
+                    
+                    if client:
+                        db_instance.update_client_pdf_status(agency_code, True)
+                        matched_count += 1
+                    else:
+                        db_instance.add_pending_pdf(agency_code)
+                        pending_count += 1
+
+                except Exception as e:
+                    errors.append(f"Error al procesar {file.filename}: {str(e)}")
+
+        # Preparar mensaje detallado
+        message = f"PDFs subidos: {uploaded_count}"
+        if matched_count > 0:
+            message += f"\nVinculados automáticamente: {matched_count}"
+        if pending_count > 0:
+            message += f"\nPendientes de vinculación: {pending_count}"
+        if errors:
+            message += f"\nErrores: {len(errors)}"
+
+        return jsonify({
+            'success': True,
+            'message': message,
+            'details': {
+                'uploaded': uploaded_count,
+                'matched': matched_count,
+                'pending': pending_count,
+                'errors': errors
+            }
+        })
 
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Error al procesar los archivos: {str(e)}'})
+        return jsonify({'success': False, 'message': str(e)})
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
 
+@app.route('/pending-pdfs')
+def get_pending_pdfs():
+    try:
+        db_instance = DatabaseManager()
+        pending = db_instance.get_pending_pdfs()
+        
+        return jsonify({
+            'success': True,
+            'pending': pending
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
+
+def scan_existing_pdfs():
+    """Escanea PDFs existentes en el directorio de uploads"""
+    try:
+        db = DatabaseManager()
+        upload_folder = app.config['UPLOAD_FOLDER']
+        
+        for filename in os.listdir(upload_folder):
+            if filename.endswith('.pdf'):
+                agency_code = filename.replace('.pdf', '')
+                
+                # Verificar si ya está en la base de datos
+                client = db.get_client_by_agency_code(agency_code)
+                
+                if client:
+                    db.update_client_pdf_status(agency_code, True)
+                    db.add_log('SYSTEM', 'pdf_scan', 'success', 
+                              f'PDF {filename} vinculado durante escaneo')
+                else:
+                    # Verificar si ya está en pendientes
+                    pending_pdfs = db.get_pending_pdfs()
+                    if not any(pdf['agency_code'] == agency_code for pdf in pending_pdfs):
+                        db.add_pending_pdf(agency_code)
+                        db.add_log('SYSTEM', 'pdf_scan', 'pending', 
+                                 f'PDF {filename} agregado a pendientes durante escaneo')
+    except Exception as e:
+        app.logger.error(f'Error durante escaneo de PDFs: {str(e)}')
+    finally:
+        if 'db' in locals():
+            db.close()
+
+@app.route('/scan-pdfs', methods=['POST'])
+def scan_pdfs():
+    try:
+        scan_existing_pdfs()
+        return jsonify({
+            'success': True,
+            'message': 'Escaneo de PDFs completado'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
+
+@app.route('/match-existing', methods=['POST'])
+def match_existing():
+    try:
+        db_instance = DatabaseManager()
+        db_instance.ensure_connection()  # Asegurar conexión
+        
+        # Log los PDFs encontrados
+        pdfs = [f.replace('.pdf', '') for f in os.listdir(app.config['UPLOAD_FOLDER']) if f.endswith('.pdf')]
+        print(f"PDFs encontrados: {pdfs}")  # Debug
+        
+        matched = 0
+        not_found = []
+        
+        # Primero, limpiar la tabla de PDFs pendientes
+        db_instance.cursor.execute("DELETE FROM pending_pdfs")
+        db_instance.conn.commit()
+        
+        for agency_code in pdfs:
+            client = db_instance.get_client_by_agency_code(agency_code)
+            
+            if client:
+                success = db_instance.update_client_pdf_status(agency_code, True)
+                if success:
+                    matched += 1
+                    db_instance.add_log('SYSTEM', 'match_existing', 'success', 
+                                      f'PDF vinculado para {agency_code}')
+            else:
+                not_found.append(agency_code)
+                # Agregar a pendientes solo si no existe
+                db_instance.add_pending_pdf(agency_code)
+                db_instance.add_log('SYSTEM', 'match_existing', 'warning', 
+                                  f'No se encontró cliente para PDF {agency_code}')
+        
+        message = f'Se vincularon {matched} PDFs con clientes existentes'
+        if not_found:
+            message += f'\nNo se encontraron clientes para: {", ".join(not_found)}'
+        
+        return jsonify({
+            'success': True,
+            'message': message,
+            'details': {
+                'matched': matched,
+                'not_found': not_found
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error en match_existing: {str(e)}")  # Debug
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
+
+@app.route('/check-client/<agency_code>')
+def check_client(agency_code):
+    try:
+        db_instance = DatabaseManager()
+        # Consulta directa para ver el cliente
+        db_instance.ensure_connection()
+        db_instance.cursor.execute("""
+            SELECT * FROM clients 
+            WHERE "Agency Code" = ?
+        """, (agency_code,))
+        client = db_instance.cursor.fetchone()
+        
+        # Consulta para ver la estructura de la tabla
+        db_instance.cursor.execute("PRAGMA table_info(clients)")
+        columns = db_instance.cursor.fetchall()
+        
+        return jsonify({
+            'client_found': client is not None,
+            'client_data': dict(zip([col[1] for col in columns], client)) if client else None,
+            'table_structure': [{'name': col[1], 'type': col[2]} for col in columns]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)})
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
+
+@app.route('/add-has-pdf-column', methods=['POST'])
+def add_has_pdf_column():
+    try:
+        db_instance = DatabaseManager()
+        db_instance.ensure_connection()
+        
+        # Crear tabla temporal con la nueva estructura
+        db_instance.cursor.execute("""
+            CREATE TABLE clients_temp (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                "Agency Code" TEXT NOT NULL,
+                "Report email" TEXT NOT NULL,
+                email_sent INTEGER DEFAULT 0,
+                sent_date DATETIME,
+                has_pdf BOOLEAN DEFAULT FALSE
+            )
+        """)
+        
+        # Copiar datos existentes
+        db_instance.cursor.execute("""
+            INSERT INTO clients_temp (id, "Agency Code", "Report email", email_sent, sent_date)
+            SELECT id, "Agency Code", "Report email", email_sent, sent_date FROM clients
+        """)
+        
+        # Eliminar tabla original
+        db_instance.cursor.execute("DROP TABLE clients")
+        
+        # Renombrar tabla temporal
+        db_instance.cursor.execute("ALTER TABLE clients_temp RENAME TO clients")
+        
+        db_instance.conn.commit()
+        return jsonify({
+            'success': True,
+            'message': 'Columna has_pdf agregada correctamente'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
+
+@app.route('/link-pdf/<agency_code>', methods=['POST'])
+def link_pdf(agency_code):
+    try:
+        data = request.json
+        pdf_name = data.get('pdf_name')
+        
+        if not pdf_name:
+            return jsonify({
+                'success': False,
+                'message': 'Nombre de PDF no proporcionado'
+            })
+            
+        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_name)
+        
+        # Verificar si el PDF existe
+        if not os.path.exists(pdf_path):
+            return jsonify({
+                'success': False,
+                'message': f'El archivo {pdf_name} no existe en la carpeta de uploads'
+            })
+            
+        db_instance = DatabaseManager()
+        db_instance.ensure_connection()
+        
+        # Actualizar el estado del PDF
+        success = db_instance.update_client_pdf_status(agency_code, True)
+        
+        if success:
+            db_instance.add_log('SYSTEM', 'manual_pdf_link', 'success', 
+                              f'PDF {pdf_name} vinculado manualmente a {agency_code}')
+            return jsonify({
+                'success': True,
+                'message': f'PDF vinculado correctamente a {agency_code}'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'No se pudo vincular el PDF'
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
+    finally:
+        if 'db_instance' in locals():
+            db_instance.close()
+
+# Modificar el bloque principal
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Escanear PDFs existentes al inicio
+    scan_existing_pdfs()
+    
+    # Iniciar el observador de archivos
+    observer = setup_pdf_watcher(app)
+    
+    try:
+        app.run(debug=True)
+    finally:
+        observer.stop()
+        observer.join()
