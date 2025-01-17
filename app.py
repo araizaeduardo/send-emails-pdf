@@ -506,5 +506,38 @@ def delete_template(template_id):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+@app.route('/upload-pdfs', methods=['POST'])
+def upload_pdfs():
+    try:
+        if 'pdfs' not in request.files:
+            return jsonify({'success': False, 'message': 'No se encontraron archivos PDF'})
+
+        files = request.files.getlist('pdfs')
+        uploaded_count = 0
+        errors = []
+
+        for file in files:
+            if file.filename == '':
+                continue
+
+            if file and file.filename.endswith('.pdf'):
+                try:
+                    filename = file.filename
+                    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                    uploaded_count += 1
+                except Exception as e:
+                    errors.append(f"Error al subir {filename}: {str(e)}")
+
+        if uploaded_count > 0:
+            message = f'Se subieron {uploaded_count} archivos PDF correctamente'
+            if errors:
+                message += f'\nErrores: {", ".join(errors)}'
+            return jsonify({'success': True, 'message': message})
+        else:
+            return jsonify({'success': False, 'message': 'No se pudo subir ningún archivo PDF'})
+
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error al procesar los archivos: {str(e)}'})
+
 if __name__ == '__main__':
     app.run(debug=True)

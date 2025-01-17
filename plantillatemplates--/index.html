@@ -25,15 +25,6 @@
                         </button>
                     </div>
                 </form>
-                <!-- Nuevo formulario para subir PDFs -->
-                <form id="uploadPdfForm" class="mt-3" onsubmit="handlePdfUpload(event)">
-                    <div class="input-group">
-                        <input type="file" class="form-control" id="pdfFiles" accept=".pdf" multiple>
-                        <button type="submit" class="btn btn-success">
-                            <i class="fas fa-file-pdf"></i> Subir PDFs
-                        </button>
-                    </div>
-                </form>
             </div>
         </div>
 
@@ -615,39 +606,6 @@
         document.addEventListener('DOMContentLoaded', function() {
             loadTemplates();
         });
-
-        // Función para manejar la subida de PDFs
-        async function handlePdfUpload(event) {
-            event.preventDefault();
-            
-            const files = document.getElementById('pdfFiles').files;
-            if (files.length === 0) {
-                alert('Por favor seleccione al menos un archivo PDF');
-                return;
-            }
-
-            const formData = new FormData();
-            for (let i = 0; i < files.length; i++) {
-                formData.append('pdfs', files[i]);
-            }
-
-            try {
-                const response = await fetch('/upload-pdfs', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-                
-                if (data.success) {
-                    alert(data.message);
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            } catch (error) {
-                alert('Error al subir los archivos: ' + error);
-            }
-        }
     </script>
 </body>
 </html>
